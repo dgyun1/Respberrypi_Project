@@ -1,0 +1,160 @@
+import math  # 수학적인 계산을 수행하는 데 사용된다.
+import numpy as np  # 배열이나 행렬과 같은 다차원의 수학 계산을 위해 사용된다.
+import argparse  # 명령줄 인자 파싱을 위해 사용
+import imutils  # 이미지 처리를 위한 간단한 유틸리티 함수들을 제공
+from imutils import face_utils  # 얼굴 특징점 검출 및 조작을 위한 유틸리티 함수들을 제공
+import time  #  시간과 관련된 함수를 제공
+import dlib  # 얼굴 감지, 얼굴 특징점 검출 등과 같은 기계 학습 관련 작업에 사용
+import cv2  # 영상 처리 및 컴퓨터 비전 작업에 사용
+from flask import Flask, render_template, Response
+import random
+from PIL import Image
+
+app = Flask(__name__)
+
+
+# 두 개의 점 사이의 유클리드 거리를 계산하는 euclidean_dist() 함수를 정의
+def euclidean_dist(pt1, pt2):
+    return np.sqrt(np.sum((pt1 - pt2) ** 2))
+
+
+# 입 모양을 나타내는 Mouth Aspect Ratio (MAR)을 계산하는 mouth_aspect_ratio() 함수를 정의
+def mouth_aspect_ratio(mouth):
+    A = euclidean_dist(mouth[2], mouth[10])  # 51, 59
+    B = euclidean_dist(mouth[4], mouth[8])  # 53, 57
+    C = euclidean_dist(mouth[0], mouth[6])  # 49, 55
+    mar = (A + B) / (2.0 * C)
+    return mar
+
+
+# MOUTH_AR _THRESH 변수를 선언하고, 이 값이 넘어가면 입이 열렸다고 판단
+MOUTH_AR_THRESH = 0.761
+
+# dlib 라이브러리에서 얼굴 인식을 위한 detector 객체를 생성
+detector = dlib.get_frontal_face_detector()
+
+# 얼굴 랜드마크를 예측하기 위한 predictor 객체를 생성
+# 랜드마크 예측을 위해 "shape_predictor_68_face_landmarks.dat" 파일이 필요하다.
+predictor = dlib.shape_predictor(
+    "/home/pi/webapps/ch07/live/shape_predictor_68_face_landmarks.dat"
+)
+
+# 얼굴 랜드마크 중에서 입술 부분만 선택하기 위해, 입술 부분 랜드마크의 시작과 끝 인덱스를 변수로 저장
+(mStart, mEnd) = (49, 68)
+
+
+cookie_img = cv2.imread("/home/pi/webapps/ch07/live/cookie.png")
+
+
+def gen_Frame():
+    camera = cv2.VideoCapture(0)
+    
+    while True:
+        start = time.time()
+        # 비디오 캡쳐 객체에서 프레임을 읽어온다.
+        ret, frame = camera.read()
+        
+        # 과자 이미지 크기 조정
+        cookie_resized = cv2.resize(cookie_img, (30, 30))
+
+        # 카메라 화면에 이미지 3개 출력
+        frame[50:80, 50:80] = cookie_resized
+        frame[200:230, 200:230] = cookie_resized
+        frame[350:380, 350:380] = cookie_resized
+
+        # 읽어온 프레임을 500픽셀의 너비로 조절
+        frame = imutils.resize(frame, width=500)
+
+        # 프레임을 회색으로 변환
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # 회색으로 변환한 프레임에서 dlib의 detector 객체를 이용해
+        # 얼굴을 인식하고, 얼굴 위치 정보를 rects에 저장
+        rects = detector(gray, 0)
+
+        for rect in rects:
+            # predictor 객체를 이용해 얼굴 랜드마크를 예측하고,
+            # 얼굴 랜드마크 정보를 shape에 저장
+            shape = predictor(gray, rect)
+
+            # 랜드마크 정보를 numpy 배열로 변환
+            shape = face_utils.shape_to_np(shape)
+
+            # 입술 부분의 랜드마크 좌표를 추출하여 mouth에 저장
+            # 랜드마크 좌표는 이전에 불러온 dlib 라이브러리의
+            # shape_predictor 함수를 사용하여 검출된 얼굴에서 추출
+            mouth = shape[mStart:mEnd]
+
+            # 추출된 입술 랜드마크 좌표를 이용하여
+            # mouth aspect ratio(MAR) 값을 계산하고, mouthMAR에 저장
+            # 입술이 얼마나 벌어졌는지 측정하는 방법 중 하나
+            mouthMAR = mouth_aspect_ratio(mouth)
+
+            # 계산된 mouthMAR 값을 mar에 저장
+            mar = mouthMAR
+
+            # 입술 랜드마크 좌표를 이용하여 입술의 윤곽선을 계산하고, mouthHull에 저장
+            # 입술이 얼마나 벌어졌는지 시각적으로 나타내기 위해 사용
+            mouthHull = cv2.convexHull(mouth)
+
+            # 이미지에 입술의 윤곽선을 그림
+            cv2.drawContours(frame, [mouthHull], -1, (0, 255, 0), 1)
+
+            # frame 이미지에 mar 값과 함께 "MAR"이라는 문자열을 표시
+            cv2.putText(
+                frame,
+                "MAR: {:.2f}".format(mar),
+                (30, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 255),
+                2,
+            )
+
+            # mar 값이 미리 정의된 임계치(MOUTH_AR_THRESH)보다 크면,
+            # 즉 입술이 열렸다면 아래의 코드를 실행
+            if mar > MOUTH_AR_THRESH:
+                # frame 이미지에 "Mouth is Open!"이라는 문자열을 표시
+                cv2.putText(
+                    frame,
+                    "Mouth is Open!",
+                    (30, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 0, 255),
+                    2,
+                )
+
+        ret, buffer = cv2.imencode(".jpg", frame)
+        frame = buffer.tobytes()
+        yield (b"--frame\r\n" b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
+
+        # 키보드 입력을 대기.
+        # 1ms동안 대기하다가 입력이 발생하면, 입력된 키 값이 key 변수에 저장
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord("q"):
+            break
+
+
+# 열린 모든 창을 닫기
+cv2.destroyAllWindows()
+
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/showImg")
+def showImg():
+    return render_template("showImg.html")
+
+
+@app.route("/video_feed")
+def video_feed():
+    return Response(gen_Frame(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=2337, debug=True, threaded=True)
